@@ -1,0 +1,25 @@
+.DS_Store
+
+# IDE and development artifacts
+.kiro/
+
+# Config files (contain user-specific settings)
+config.env
+
+# Anonymization salt (user-specific, generated on first --anonymize run)
+anonymize.salt
+
+# Log files
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Results packaging
+*.zip
+
+# Test folder
+test/
