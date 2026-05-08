@@ -121,6 +121,8 @@ git clone https://github.com/awslabs/resource-discovery-for-gcp.git
 cd resource-discovery-for-gcp
 ```
 
+![git clone](images/git_clone.png)
+
 **2. Configure**
 
 Copy the example config file and update with your values:
