@@ -115,6 +115,10 @@ usage() {
   echo "  -y  Skip confirmation prompt (for automation)"
   echo "  --dry-run  Validate query and show data size without executing (no data extracted)"
   echo "  --anonymize  Hash sensitive identifiers (resourceName, resourceGlobalName, projectID)"
+  echo ""
+  echo "Advanced (use only under AWS guidance; not supported by all analysis tools):"
+  echo "  -r  Extract N days ending yesterday instead of a full month (max 31, mutually exclusive with -m)"
+  echo "  --use-standard-export  Use standard billing export (no resource-level detail columns)"
   echo "  -h  Show help message"
   echo ""
   exit 1
@@ -132,13 +136,16 @@ format_array() {
 add_days_to_date() {
   local input_date=$1
   local days=$2
-  
+
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    date -j -v+"${days}"d -f "%Y-%m-%d" "$input_date" +%Y-%m-%d
+    local sign="+"
+    [[ "$days" == -* ]] && sign=""
+    date -j -v"${sign}${days}"d -f "%Y-%m-%d" "$input_date" +%Y-%m-%d
   else
     date -d "$input_date + $days days" +%Y-%m-%d
   fi
 }
+
 
 
 
@@ -492,6 +499,22 @@ if ! command -v gcloud &> /dev/null; then
 fi
 log_message "✓ Required tools verified"
 
+
+# =============================================================================
+# DISPLAY VARIABLE SETUP (redacted when anonymizing)
+# =============================================================================
+# Set display versions of sensitive variables (redacted when anonymizing)
+if [ "$ANONYMIZE" = "true" ]; then
+  DISPLAY_BILLING_TABLE="[REDACTED]"
+  DISPLAY_GCS_BUCKET="[REDACTED]"
+  DISPLAY_PROJECT_FILTER="[REDACTED]"
+else
+  DISPLAY_BILLING_TABLE="$BILLING_TABLE"
+  DISPLAY_GCS_BUCKET="$GCS_BUCKET"
+  DISPLAY_PROJECT_FILTER="$PROJECT_FILTER"
+fi
+
+
 # =============================================================================
 # API VALIDATIONS (require network calls)
 # =============================================================================
@@ -602,16 +625,6 @@ if [ "$ANONYMIZE" = "true" ]; then
   fi
 fi
 
-# Set display versions of sensitive variables (redacted when anonymizing)
-if [ "$ANONYMIZE" = "true" ]; then
-  DISPLAY_BILLING_TABLE="[REDACTED]"
-  DISPLAY_GCS_BUCKET="[REDACTED]"
-  DISPLAY_PROJECT_FILTER="[REDACTED]"
-else
-  DISPLAY_BILLING_TABLE="$BILLING_TABLE"
-  DISPLAY_GCS_BUCKET="$GCS_BUCKET"
-  DISPLAY_PROJECT_FILTER="$PROJECT_FILTER"
-fi
 
 # =============================================================================
 # DATE/MONTH CALCULATIONS
@@ -871,6 +884,7 @@ BEGIN
 CREATE OR REPLACE TEMP TABLE gcp_usage_discovery_month AS
 SELECT
     service.description AS serviceDescription,
+    ${PROJECT_ID_FIELD} AS projectID,
     sku.id AS SKUID,
     sku.description AS SKUDescription,
     location.location AS Region,
@@ -878,13 +892,17 @@ SELECT
     (SELECT ARRAY_TO_STRING(ARRAY_AGG(CONCAT(REGEXP_REPLACE(system_labels.key, r'^[^/]+/', ''), ':', system_labels.value) IGNORE NULLS ORDER BY system_labels.key), ';') 
      FROM UNNEST(system_labels) AS system_labels) AS spec,
     (CASE WHEN consumption_model.description = 'Default' THEN '' ELSE consumption_model.description END) AS consumptionModelDescription,
-    SUM(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageInPricingUnits,
-    usage.pricing_unit AS usagePricingUnit,
-    ${PROJECT_ID_FIELD} AS projectID,
     (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN tags.key IN UNNEST(${BQ_TAGS}) THEN CONCAT(tags.key, ':', tags.value) ELSE NULL END) IGNORE NULLS ORDER BY tags.key), ';') 
      FROM UNNEST(tags) AS tags) AS environmentTags,
     (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN labels.key IN UNNEST(${BQ_LABELS}) THEN CONCAT(labels.key, ':', labels.value) ELSE NULL END) IGNORE NULLS ORDER BY labels.key), ';') 
      FROM UNNEST(labels) AS labels) AS environmentLabels,
+    SUM(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageInPricingUnits,
+    usage.pricing_unit AS usagePricingUnit,
+    MIN(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMin,
+    MAX(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMax,
+    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(50)] AS usageMedian,
+    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(95)] AS usageP95,
+    COUNT(*) AS rowCount,
     SUM(CAST(cost_at_list AS NUMERIC)) AS costAtList,
     SUM(CAST((cost_at_list / currency_conversion_rate) AS NUMERIC)) AS costAtListUSD,
     SUM(CAST(cost_at_list_consumption_model AS NUMERIC)) AS costAtListConsumptionModel,
@@ -901,16 +919,16 @@ WHERE
     ${WHERE_FILTER}
 GROUP BY
     serviceDescription,
+    projectID,
     SKUID,
     SKUDescription,
     Region,
     transactionType,
     spec,
     consumptionModelDescription,
-    usagePricingUnit,
-    projectID,
     environmentTags,
     environmentLabels,
+    usagePricingUnit,
     currency
 ORDER BY
     serviceDescription,
@@ -932,17 +950,19 @@ SELECT * FROM gcp_usage_discovery_month;
 END;
 "
 else
-  # Detailed Export Query (includes resource.name, resource.global_name, and resourceType)
   # Set resource and project fields based on anonymization
+  # Derived resource identifiers. Collapse BigQuery Analysis rows by setting resourceName/resourceGlobalName to NULL, which reduces output cardinality.
+  # resourceType still derives from the original resource.global_name below.
+  RESOURCE_NAME_DERIVED="CASE WHEN service.description = 'BigQuery' AND sku.description LIKE 'Analysis%' THEN NULL ELSE COALESCE(REGEXP_EXTRACT(resource.name, r'/([^/]+)$'), resource.name) END"
+  RESOURCE_GLOBAL_NAME_DERIVED="CASE WHEN service.description = 'BigQuery' AND sku.description LIKE 'Analysis%' THEN NULL ELSE COALESCE(REGEXP_EXTRACT(resource.global_name, r'/([^/]+)$'), resource.global_name) END"
   if [ "$ANONYMIZE" = "true" ]; then
-    # Fully anonymize sensitive identifiers (SHA512 + salt, 20-char output, null/empty guard)
-    # Extract last path segment first (consistent with non-anonymized output and Python anonymizer)
-    RESOURCE_NAME_FIELD="IF(resource.name IS NULL OR resource.name = '', resource.name, CONCAT('res_', SUBSTR(TO_HEX(SHA512(CONCAT(COALESCE(REGEXP_EXTRACT(resource.name, r'/([^/]+)$'), resource.name), '${ANON_SALT}'))), 1, 20)))"
-    RESOURCE_GLOBAL_NAME_FIELD="IF(resource.global_name IS NULL OR resource.global_name = '', resource.global_name, CONCAT('global_', SUBSTR(TO_HEX(SHA512(CONCAT(COALESCE(REGEXP_EXTRACT(resource.global_name, r'/([^/]+)$'), resource.global_name), '${ANON_SALT}'))), 1, 20)))"
+    # Hash the derived identifiers (SHA512 + salt, 20-char output). NULL/'' preserved.
+    RESOURCE_NAME_FIELD="IF(${RESOURCE_NAME_DERIVED} IS NULL OR ${RESOURCE_NAME_DERIVED} = '', ${RESOURCE_NAME_DERIVED}, CONCAT('res_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)))"
+    RESOURCE_GLOBAL_NAME_FIELD="IF(${RESOURCE_GLOBAL_NAME_DERIVED} IS NULL OR ${RESOURCE_GLOBAL_NAME_DERIVED} = '', ${RESOURCE_GLOBAL_NAME_DERIVED}, CONCAT('global_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_GLOBAL_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)))"
     PROJECT_ID_FIELD="IF(project.id IS NULL OR project.id = '', project.id, CONCAT('proj_', SUBSTR(TO_HEX(SHA512(CONCAT(project.id, '${ANON_SALT}'))), 1, 20)))"
   else
-    RESOURCE_NAME_FIELD="COALESCE(REGEXP_EXTRACT(resource.name, r'/([^/]+)$'), resource.name)"
-    RESOURCE_GLOBAL_NAME_FIELD="COALESCE(REGEXP_EXTRACT(resource.global_name, r'/([^/]+)$'), resource.global_name)"
+    RESOURCE_NAME_FIELD="$RESOURCE_NAME_DERIVED"
+    RESOURCE_GLOBAL_NAME_FIELD="$RESOURCE_GLOBAL_NAME_DERIVED"
     PROJECT_ID_FIELD="project.id"
   fi
   
@@ -954,6 +974,7 @@ SELECT
     ${RESOURCE_NAME_FIELD} AS resourceName,
     ${RESOURCE_GLOBAL_NAME_FIELD} AS resourceGlobalName,
     COALESCE(REGEXP_EXTRACT(resource.global_name, r'/([^/]+)/[^/]+$'), 'Unassigned') AS resourceType,
+    ${PROJECT_ID_FIELD} AS projectID,
     sku.id AS SKUID,
     sku.description AS SKUDescription,
     location.location AS Region,
@@ -961,13 +982,18 @@ SELECT
     (SELECT ARRAY_TO_STRING(ARRAY_AGG(CONCAT(REGEXP_REPLACE(system_labels.key, r'^[^/]+/', ''), ':', system_labels.value) IGNORE NULLS ORDER BY system_labels.key), ';') 
      FROM UNNEST(system_labels) AS system_labels) AS spec,
     (CASE WHEN consumption_model.description = 'Default' THEN '' ELSE consumption_model.description END) AS consumptionModelDescription,
-    SUM(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageInPricingUnits,
-    usage.pricing_unit AS usagePricingUnit,
-    ${PROJECT_ID_FIELD} AS projectID,
     (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN tags.key IN UNNEST(${BQ_TAGS}) THEN CONCAT(tags.key, ':', tags.value) ELSE NULL END) IGNORE NULLS ORDER BY tags.key), ';') 
      FROM UNNEST(tags) AS tags) AS environmentTags,
     (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN labels.key IN UNNEST(${BQ_LABELS}) THEN CONCAT(labels.key, ':', labels.value) ELSE NULL END) IGNORE NULLS ORDER BY labels.key), ';') 
      FROM UNNEST(labels) AS labels) AS environmentLabels,
+    SUM(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageInPricingUnits,
+    usage.pricing_unit AS usagePricingUnit,
+    MIN(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMin,
+    MAX(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMax,
+    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(50)] AS usageMedian,
+    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(95)] AS usageP95,
+    COUNT(*) AS rowCount,
+    COUNT(DISTINCT resource.global_name) AS distinctResourceCount,
     SUM(CAST(cost_at_list AS NUMERIC)) AS costAtList,
     SUM(CAST((cost_at_list / currency_conversion_rate) AS NUMERIC)) AS costAtListUSD,
     SUM(CAST(cost_at_list_consumption_model AS NUMERIC)) AS costAtListConsumptionModel,
@@ -987,24 +1013,24 @@ GROUP BY
     resourceName,
     resourceGlobalName,
     resourceType,
+    projectID,
     SKUID,
     SKUDescription,
     Region,
     transactionType,
     spec,
     consumptionModelDescription,
-    usagePricingUnit,
-    projectID,
     environmentTags,
     environmentLabels,
+    usagePricingUnit,
     currency
 ORDER BY
     serviceDescription,
     resourceGlobalName,
     resourceName,
+    projectID,
     SKUDescription,
-    Region,
-    projectID;
+    Region;
 
 EXPORT DATA
 OPTIONS (

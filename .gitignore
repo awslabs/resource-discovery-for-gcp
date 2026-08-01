@@ -23,3 +23,6 @@ logs/
 
 # Test folder
 test/
+
+# Internal planning docs
+docs/BACKLOG.md

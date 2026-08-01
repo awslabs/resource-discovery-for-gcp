@@ -5,33 +5,13 @@
 The GCP Usage Discovery Tool is a bash script that generates usage reports from your Google Cloud Platform environment. This script extracts detailed list price and usage data from BigQuery billing exports for migration planning and pricing analysis.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Google Cloud Platform                        │
-│                                                                     │
-│   ┌──────────────┐         ┌──────────────┐         ┌────────────┐  │
-│   │ Cloud Shell  │         │   BigQuery   │         │   Cloud    │  │
-│   │              │         │              │         │  Storage   │  │
-│   │ 1. Clone     │  2a.    │ ┌──────────┐ │  2b.    │            │  │
-│   │    repo      │──-Run──▶│ │ Billing  │ │──Save─-▶│ Usage Data │  │
-│   │              │  query  │ │  Table   │ │ results │  CSV.gz    │  │
-│   │ 2. Run       │         │ └──────────┘ │         │            │  │
-│   │    script    │         └──────────────┘         └────────────┘  │
-│   │              │                                         │        │
-│   │ 3. Download  │◀────────────────────────────────────────┘        │
-│   │    & Package │              download                            │
-│   │              │                                                  │
-│   │ 4. ZIP file  │                                                  │
-│   │    created   │                                                  │
-│   └──────────────┘                                                  │
-│         │                                                           │
-└─────────┼───────────────────────────────────────────────────────────┘
-          │
-          │ 5. Share results
-          ▼
-   ┌────────────────┐
-   │   AWS Team     │
-   │   (Analysis)   │
-   └────────────────┘
+Cloud Shell  ──1. run query──▶  BigQuery billing table
+     ▲                                  │
+     │                            2. export results
+     │                                  ▼
+     └────── 3. download ──────  Cloud Storage (CSV.gz)
+
+Cloud Shell  ──4. zip & share──▶  AWS Team (analysis)
 ```
 
 The script pulls one month of usage data from your GCP detailed billing export including service details, resource identifiers, usage, list prices, and list credits. Negotiated pricing, adjustments, rounding errors, and taxes are not included. See [Data Dictionary](docs/DATA_DICTIONARY.md) for the full column reference.
@@ -45,6 +25,7 @@ The script pulls one month of usage data from your GCP detailed billing export i
 - [Running the Script](#running-the-script)
 - [Usage Details](#usage-details)
 - [Troubleshooting](#troubleshooting)
+- [Changelog](#changelog)
 - [Contributing](#contributing)
 - [License](#license)
 - [Security](#security)
@@ -68,7 +49,7 @@ The script pulls one month of usage data from your GCP detailed billing export i
 - [Export Cloud Billing data to BigQuery](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-setup)
 - [Detailed usage cost data](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage)
 
-Enable **"Detailed usage cost data"** export. If you're enabling this for the first time now, contact your AWS representative. Do not run this script. Your AWS representative will provide alternative data collection options.
+Enable the **"Detailed usage cost data"** export.
 
 **2. Cloud Storage Bucket Access**
 
@@ -76,18 +57,7 @@ Enable **"Detailed usage cost data"** export. If you're enabling this for the fi
 
 **3. Required Permissions**
 
-Grant the minimum required permissions for users to run the extraction script:
-
-| Service | Recommended Predefined Role | Permission | Purpose | Scope | Resource Access |
-|---------|----------------------------|-----------|---------|-------|-----------------|
-| **BigQuery (Data)** | BigQuery Data Viewer | `bigquery.tables.get` | View table metadata | Dataset level | Billing export dataset |
-| | | `bigquery.tables.getData` | Read billing table | Dataset level | Billing export dataset |
-| | | `bigquery.tables.export` | Export data from tables | Dataset level | Billing export dataset |
-| **BigQuery (Execution)** | BigQuery Job User | `bigquery.jobs.create` | Execute queries and export jobs | Project level | Billing project |
-| **Cloud Storage** | Storage Object User | `storage.buckets.get` | Verify bucket exists | Bucket level | Output bucket |
-| | | `storage.objects.create` | Write export files | Bucket level | Output bucket |
-| | | `storage.objects.get` | Read objects (for verification) | Bucket level | Output bucket |
-| | | `storage.objects.list` | List objects in bucket | Bucket level | Output bucket |
+Grant the minimum permissions to run the script: BigQuery Data Viewer and BigQuery Job User on the billing dataset/project, and Storage Object User on the output bucket. See [Permissions](docs/PERMISSIONS.md) for the exact roles and permission list.
 
 **4. Cloud Shell Access** 
 
@@ -97,14 +67,7 @@ This script is designed to run in Cloud Shell.
 
 **5. When to Run This Script**
 
-**Run the script on or after the 5th day of the month for complete data.**
-
-| Run Date | Data Extracted | Why Wait? |
-|----------|----------------|-----------|
-| April 5+ | March (full month) | Captures late-arriving usage data from March |
-| April 1-4 | March (may be incomplete) | Some March usage data may still be arriving |
-
-**Example:** If today is April 8, 2025, the script extracts all March 2025 usage data.
+Run the script on or after the 5th day of the month so late-arriving usage from the prior month is captured. For example, running on April 8 extracts all of March.
 
 ---
 
@@ -211,26 +174,22 @@ These parameters are functional but not supported by all downstream analysis too
 
 ⚠️ When anonymized, you will not be able to link results back to specific resources in your GCP environment. Use this option only when identifier protection is required.
 
-When `--anonymize` is used, the following identifiers are hashed in the CSV output using SHA-512 with a random salt:
+`--anonymize` hashes `resourceName`, `resourceGlobalName`, and `projectID` (SHA-512 with a random salt) and redacts configuration values (billing table, bucket, project filter) from the log file and execution metadata. A security-sensitive `anonymize.salt` file is generated and reused so hashes stay consistent across runs; do not share it.
 
-| Field | Anonymized | Example output |
-|-------|-----------|----------------|
-| resourceName | Yes | `res_a3f5c8d9e2b14f6a7890` |
-| resourceGlobalName | Yes | `global_a3f5c8d9e2b14f6a7890` |
-| projectID | Yes | `proj_a3f5c8d9e2b14f6a7890` |
-| All other columns | No | Original values |
+See [Data Dictionary](docs/DATA_DICTIONARY.md) for per-column anonymization details.
 
-When `--anonymize` is used, configuration values (billing table name, bucket name, project filter) are also redacted from the log file and execution metadata.
-
-**Salt file:** A file named `anonymize.salt` is generated on the first `--anonymize` run and reused on subsequent runs to ensure consistent hashes. The salt file is security-sensitive: anyone who obtains both the salt and the anonymized output can recover resource and project identifiers by hashing known values against the salt. Do not share the salt file.
-
-See [Data Dictionary](docs/DATA_DICTIONARY.md) for full column details.
 
 ---
 
 ## Troubleshooting
 
 See [Troubleshooting Guide](docs/TROUBLESHOOTING.md) for common errors and solutions.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
 

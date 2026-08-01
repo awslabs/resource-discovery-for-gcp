@@ -1,24 +1,30 @@
 # Data Dictionary
 
-The following table describes each column extracted by the script (25 columns for detailed export, 22 for standard export). Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
+The following table describes each column extracted by the script (31 columns for detailed export, 27 for standard export). Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
 
 | Column Name | Type | Description |
 |-------------|------|-------------|
 | **serviceDescription** | String | The Google Cloud service that reported the data. |
-| **resourceName** | String | The last path segment of the resource name (e.g., "instance-20251221-065118", "my-disk"). For simple names without paths, the value is preserved as-is. When `--anonymize` is used, this is hashed to a 24-character value (e.g., "res_a3f5c8d9e2b14f6a7890"). |
-| **resourceGlobalName** | String | The last path segment of the resource identifier (e.g., "vm-1", "data1", "my-bucket"). When `--anonymize` is used, this is hashed to a 27-character value (e.g., "global_a3f5c8d9e2b14f6a7890"). |
-| **resourceType** | String | The type of resource extracted from the global name path (e.g., "instances", "disks", "tables", "buckets"). Shows "Unassigned" if the type cannot be determined. This column is always visible, even when anonymized. |
+| **resourceName** | String | Detailed export only. The last path segment of the resource name (e.g., "instance-20251221-065118", "my-disk"). NULL for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis'). For simple names without paths, the value is preserved as-is. When `--anonymize` is used, this is hashed to a 24-character value (e.g., "res_a3f5c8d9e2b14f6a7890"). |
+| **resourceGlobalName** | String | Detailed export only. The last path segment of the resource identifier (e.g., "vm-1", "data1", "my-bucket"). NULL for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis'). When `--anonymize` is used, this is hashed to a 27-character value (e.g., "global_a3f5c8d9e2b14f6a7890"). |
+| **resourceType** | String | Detailed export only. The type of resource extracted from the global name path (e.g., "instances", "disks", "tables", "buckets"). Shows "Unassigned" if the type cannot be determined. This column is always visible, even when anonymized. |
+| **projectID** | String | The ID of the Google Cloud project that generated the data. When `--anonymize` is used, this is hashed to a 25-character value (e.g., "proj_a3f5c8d9e2b14f6a7890"). |
 | **SKUID** | String | The ID of the resource used by the service. |
 | **SKUDescription** | String | A description of the resource type used by the service (e.g., "Standard Storage US"). |
 | **Region** | String | Location of usage at the level of a multi-region, country, region, or zone. |
 | **transactionType** | String | The transaction type of the seller (GOOGLE, THIRD_PARTY_RESELLER, or THIRD_PARTY_AGENCY). |
 | **spec** | String | System-generated labels on the resource with service prefixes removed (e.g., "cores:4;memory:15360;object_state:live"). Original format like "compute.googleapis.com/cores:4" is simplified to "cores:4" for conciseness. |
 | **consumptionModelDescription** | String | The description of the consumption model. Note: "default" values are normalized to blank. |
-| **usageInPricingUnits** | Float | The quantity of usage in pricing units. |
-| **usagePricingUnit** | String | The unit in which resource usage is measured (e.g., "gibibyte month"). |
-| **projectID** | String | The ID of the Google Cloud project that generated the data. When `--anonymize` is used, this is hashed to a 25-character value (e.g., "proj_a3f5c8d9e2b14f6a7890"). |
 | **environmentTags** | String | Captured tags matching the configured tag keys (semicolon-separated key:value pairs). |
 | **environmentLabels** | String | Captured labels matching the configured label keys (semicolon-separated key:value pairs). |
+| **usageInPricingUnits** | Float | The quantity of usage in pricing units. |
+| **usagePricingUnit** | String | The unit in which resource usage is measured (e.g., "gibibyte month"). |
+| **usageMin** | Float | Minimum usage (in pricing units) among the line items aggregated into this row. |
+| **usageMax** | Float | Maximum usage (in pricing units) among the line items aggregated into this row. |
+| **usageMedian** | Float | Approximate median (50th percentile) of usage (in pricing units) across the aggregated line items. |
+| **usageP95** | Float | Approximate 95th percentile of usage (in pricing units) across the aggregated line items. |
+| **rowCount** | Integer | Number of raw billing line items aggregated into this row. |
+| **distinctResourceCount** | Integer | Detailed export only. Count of distinct original resource identifiers aggregated into this row. |
 | **costAtList** | Float | List price in the billing currency (publicly available pricing). |
 | **costAtListUSD** | Float | List price in USD (publicly available pricing). |
 | **costAtListConsumptionModel** | Float | List price per the applicable consumption model in the billing currency (publicly available pricing). |
@@ -38,7 +44,7 @@ The following table describes each column extracted by the script (25 columns fo
 - **resourceType**: Always visible (e.g., "instances", "disks", "tables") - extracted from the path for analysis
 - **projectID**: Fully hashed (e.g., "proj_a3f5c8d9e2b14f6a7890")
 
-This approach maintains the ability to link multiple line items to the same resource while protecting sensitive identifiers. The same identifier always produces the same hash as long as the same salt file is used, maintaining data relationships across extraction runs. The resourceType column provides resource classification for analysis without exposing sensitive information. Blank or null resource names are preserved as blank (not hashed).
+This approach maintains the ability to link multiple line items to the same resource while protecting sensitive identifiers. The same identifier always produces the same hash as long as the same salt file is used, maintaining data relationships across extraction runs. The resourceType column provides resource classification for analysis without exposing sensitive information. Blank, null, and collapsed BigQuery Analysis resource names are preserved as-is (not hashed).
 
 **Salt file security:** The salt file (`anonymize.salt`) is security-sensitive. Anyone who obtains both the salt and the anonymized output can recover resource and project identifiers by hashing known values against the salt. Do not share the salt file.
 
