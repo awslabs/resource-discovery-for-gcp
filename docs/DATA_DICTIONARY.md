@@ -1,6 +1,6 @@
 # Data Dictionary
 
-The following table describes each column extracted by the script (32 columns for detailed export, 27 for standard export). Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
+The following table describes the columns extracted by the script. Columns marked "Detailed export only" are omitted from standard exports. Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
 
 | Column Name | Type | Description |
 |-------------|------|-------------|
@@ -19,15 +19,11 @@ The following table describes each column extracted by the script (32 columns fo
 | **environmentLabels** | String | Captured labels matching the configured label keys (semicolon-separated key:value pairs). |
 | **usageInPricingUnits** | Float | The quantity of usage in pricing units. |
 | **usagePricingUnit** | String | The unit in which resource usage is measured (e.g., "gibibyte month"). |
-| **usageMin** | Float | Standard export only. Minimum usage among the billing line items aggregated into this row. |
-| **usageMax** | Float | Standard export only. Maximum usage among the billing line items aggregated into this row. |
-| **usageMedian** | Float | Standard export only. Approximate median usage across the billing line items aggregated into this row. |
-| **usageP95** | Float | Standard export only. Approximate 95th percentile usage across the billing line items aggregated into this row. |
-| **usageWindowCount** | Integer | Detailed export only. Number of positive net usage windows used by the window statistics. |
-| **usageWindowMin** | Float | Detailed export only. Minimum positive net usage-window total. |
-| **usageWindowMax** | Float | Detailed export only. Maximum positive net usage-window total. |
-| **usageWindowMedian** | Float | Detailed export only. Approximate median of positive net usage-window totals. |
-| **usageWindowP95** | Float | Detailed export only. Approximate 95th percentile of positive net usage-window totals. |
+| **usageWindowMin** | Float | Minimum positive net usage-window total. |
+| **usageWindowMax** | Float | Maximum positive net usage-window total. |
+| **usageWindowMedian** | Float | Approximate median of positive net usage-window totals. |
+| **usageWindowP95** | Float | Approximate 95th percentile of positive net usage-window totals. |
+| **usageWindowCount** | Integer | Number of positive net usage windows used by the window statistics. |
 | **rowCount** | Integer | Number of raw billing line items aggregated into this row. |
 | **distinctResourceCount** | Integer | Detailed export only. Count of distinct original resource identifiers aggregated into this row. |
 | **costAtList** | Float | List price in the billing currency (publicly available pricing). |
@@ -41,18 +37,12 @@ The following table describes each column extracted by the script (32 columns fo
 | **sustainedUsageDiscount** | Float | Automatic discount for running eligible Compute Engine resources for a significant portion of the billing month (in billing currency). |
 | **currency** | String | The currency that the cost is billed in. |
 
-**Usage-window statistics:** Detailed export only. Records are netted across consumption models by start/end window for matching grouping dimensions. Only positive windows starting within the requested period are included, and the resulting statistics repeat across consumption-model rows.
+**Usage-window statistics:** Usage is netted across consumption models for each start/end window. Detailed exports calculate statistics per resource when identifiers exist; standard exports calculate them per project/SKU.
 
 **Note:** This extract includes only publicly available list prices and list credits. Negotiated pricing, adjustments, rounding errors, and taxes are not included.
 
-**Anonymization:** When the `--anonymize` flag is used, sensitive identifiers are hashed using SHA512 with a random salt and 20-character hex output plus prefix:
-- **resourceName**: Last path segment is extracted first, then hashed (e.g., "res_a3f5c8d9e2b14f6a7890")
-- **resourceGlobalName**: Last path segment is extracted first, then hashed (e.g., "global_a3f5c8d9e2b14f6a7890")
-- **resourceType**: Always visible (e.g., "instances", "disks", "tables") - extracted from the path for analysis
-- **projectID**: Fully hashed (e.g., "proj_a3f5c8d9e2b14f6a7890")
+**Anonymization:** The `--anonymize` flag hashes `resourceName`, `resourceGlobalName`, and `projectID` using SHA512 with a local random salt. `resourceType` remains visible. Reusing the same salt produces consistent hashes across runs.
 
-This approach maintains the ability to link multiple line items to the same resource while protecting sensitive identifiers. The same identifier always produces the same hash as long as the same salt file is used, maintaining data relationships across extraction runs. The resourceType column provides resource classification for analysis without exposing sensitive information.
+**Salt file security:** Keep `anonymize.salt` private. Anyone with the salt can test known identifiers against the anonymized values.
 
-**Salt file security:** The salt file (`anonymize.salt`) is security-sensitive. Anyone who obtains both the salt and the anonymized output can recover resource and project identifiers by hashing known values against the salt. Do not share the salt file.
-
-**⚠️ IMPORTANT:** When using anonymization, you will NOT be able to link the pricing results back to specific resources in your GCP environment. The anonymized results may be difficult to relate to your actual infrastructure. Use this option only when identifier protection is required and you understand this limitation.
+**IMPORTANT:** When using anonymization, you will NOT be able to link the pricing results back to specific resources in your GCP environment. Use this option only when identifier protection is required and you accept this limitation.

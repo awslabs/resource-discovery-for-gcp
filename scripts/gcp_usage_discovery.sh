@@ -860,15 +860,6 @@ else
   fi
 fi
 
-# Set invoice month value based on mode (used in both query types)
-if [ "$USE_DATE_RANGE" = "true" ]; then
-  RUN_DATE=$(date +%Y%m%d)
-  RANGE_PADDED=$(printf "%02d" "$DATE_RANGE")
-  INVOICE_MONTH_VALUE="'${RUN_DATE}-${RANGE_PADDED}'"  # Script run date + range
-else
-  INVOICE_MONTH_VALUE="invoice.month"  # Use actual invoice month
-fi
-
 # Build query based on export type (detailed vs standard)
 if [ "$USE_STANDARD_EXPORT" = "true" ]; then
   # Standard Export Query (no resource.name, resource.global_name, or resourceType)
@@ -882,42 +873,42 @@ if [ "$USE_STANDARD_EXPORT" = "true" ]; then
   BILLING_QUERY="
 BEGIN
 CREATE OR REPLACE TEMP TABLE gcp_usage_discovery_month AS
-SELECT
+WITH base_rows AS (
+  SELECT
     service.description AS serviceDescription,
     ${PROJECT_ID_FIELD} AS projectID,
     sku.id AS SKUID,
     sku.description AS SKUDescription,
     location.location AS Region,
     (CASE WHEN transaction_type = 'GOOGLE' THEN NULL ELSE transaction_type END) AS transactionType,
-    (SELECT ARRAY_TO_STRING(ARRAY_AGG(CONCAT(REGEXP_REPLACE(system_labels.key, r'^[^/]+/', ''), ':', system_labels.value) IGNORE NULLS ORDER BY system_labels.key), ';') 
+    (SELECT ARRAY_TO_STRING(ARRAY_AGG(CONCAT(REGEXP_REPLACE(system_labels.key, r'^[^/]+/', ''), ':', system_labels.value) IGNORE NULLS ORDER BY system_labels.key), ';')
      FROM UNNEST(system_labels) AS system_labels) AS spec,
     (CASE WHEN consumption_model.description = 'Default' THEN '' ELSE consumption_model.description END) AS consumptionModelDescription,
-    (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN tags.key IN UNNEST(${BQ_TAGS}) THEN CONCAT(tags.key, ':', tags.value) ELSE NULL END) IGNORE NULLS ORDER BY tags.key), ';') 
+    (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN tags.key IN UNNEST(${BQ_TAGS}) THEN CONCAT(tags.key, ':', tags.value) ELSE NULL END) IGNORE NULLS ORDER BY tags.key), ';')
      FROM UNNEST(tags) AS tags) AS environmentTags,
-    (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN labels.key IN UNNEST(${BQ_LABELS}) THEN CONCAT(labels.key, ':', labels.value) ELSE NULL END) IGNORE NULLS ORDER BY labels.key), ';') 
+    (SELECT ARRAY_TO_STRING(ARRAY_AGG((CASE WHEN labels.key IN UNNEST(${BQ_LABELS}) THEN CONCAT(labels.key, ':', labels.value) ELSE NULL END) IGNORE NULLS ORDER BY labels.key), ';')
      FROM UNNEST(labels) AS labels) AS environmentLabels,
-    SUM(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageInPricingUnits,
+    usage_start_time AS usageWindowStart,
+    usage_end_time AS usageWindowEnd,
+    CAST(usage.amount_in_pricing_units AS NUMERIC) AS usageAmount,
     usage.pricing_unit AS usagePricingUnit,
-    MIN(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMin,
-    MAX(CAST(usage.amount_in_pricing_units AS NUMERIC)) AS usageMax,
-    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(50)] AS usageMedian,
-    APPROX_QUANTILES(CAST(usage.amount_in_pricing_units AS NUMERIC), 100)[OFFSET(95)] AS usageP95,
-    COUNT(*) AS rowCount,
-    COALESCE(SUM(CAST(cost_at_list AS NUMERIC)), 0) AS costAtList,
-    COALESCE(SUM(CAST((cost_at_list / currency_conversion_rate) AS NUMERIC)), 0) AS costAtListUSD,
-    COALESCE(SUM(CAST(cost_at_list_consumption_model AS NUMERIC)), 0) AS costAtListConsumptionModel,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'FEE_UTILIZATION_OFFSET')) AS feeUtilizationOffset,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'COMMITTED_USAGE_DISCOUNT_DOLLAR_BASE')) AS committedUsageDiscountDollarBase,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'COMMITTED_USAGE_DISCOUNT')) AS committedUsageDiscount,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'FREE_TIER')) AS freeTier,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'SUBSCRIPTION_BENEFIT')) AS subscriptionBenefit,
-    SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'SUSTAINED_USAGE_DISCOUNT')) AS sustainedUsageDiscount,
+    CAST(cost_at_list AS NUMERIC) AS costAtListValue,
+    CAST((cost_at_list / currency_conversion_rate) AS NUMERIC) AS costAtListUSDValue,
+    CAST(cost_at_list_consumption_model AS NUMERIC) AS costAtListConsumptionModelValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'FEE_UTILIZATION_OFFSET') AS feeUtilizationOffsetValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'COMMITTED_USAGE_DISCOUNT_DOLLAR_BASE') AS committedUsageDiscountDollarBaseValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'COMMITTED_USAGE_DISCOUNT') AS committedUsageDiscountValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'FREE_TIER') AS freeTierValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'SUBSCRIPTION_BENEFIT') AS subscriptionBenefitValue,
+    (SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) c WHERE c.type = 'SUSTAINED_USAGE_DISCOUNT') AS sustainedUsageDiscountValue,
     currency AS currency
-FROM
+  FROM
     \`${BILLING_TABLE}\`
-WHERE
+  WHERE
     ${WHERE_FILTER}
-GROUP BY
+),
+grouped_rows AS (
+  SELECT
     serviceDescription,
     projectID,
     SKUID,
@@ -928,14 +919,146 @@ GROUP BY
     consumptionModelDescription,
     environmentTags,
     environmentLabels,
+    usageWindowStart,
+    usageWindowEnd,
     usagePricingUnit,
-    currency
-ORDER BY
+    currency,
+    GROUPING(consumptionModelDescription) AS consumptionModelIsAggregated,
+    GROUPING(usageWindowStart) AS usageWindowIsAggregated,
+    SUM(usageAmount) AS aggregatedUsage,
+    COUNT(*) AS aggregatedRowCount,
+    COALESCE(SUM(costAtListValue), 0) AS aggregatedCostAtList,
+    COALESCE(SUM(costAtListUSDValue), 0) AS aggregatedCostAtListUSD,
+    COALESCE(SUM(costAtListConsumptionModelValue), 0) AS aggregatedCostAtListConsumptionModel,
+    SUM(feeUtilizationOffsetValue) AS aggregatedFeeUtilizationOffset,
+    SUM(committedUsageDiscountDollarBaseValue) AS aggregatedCommittedUsageDiscountDollarBase,
+    SUM(committedUsageDiscountValue) AS aggregatedCommittedUsageDiscount,
+    SUM(freeTierValue) AS aggregatedFreeTier,
+    SUM(subscriptionBenefitValue) AS aggregatedSubscriptionBenefit,
+    SUM(sustainedUsageDiscountValue) AS aggregatedSustainedUsageDiscount
+  FROM base_rows
+  GROUP BY GROUPING SETS (
+    (
+      serviceDescription,
+      projectID,
+      SKUID,
+      SKUDescription,
+      Region,
+      transactionType,
+      spec,
+      consumptionModelDescription,
+      environmentTags,
+      environmentLabels,
+      usagePricingUnit,
+      currency
+    ),
+    (
+      serviceDescription,
+      projectID,
+      SKUID,
+      SKUDescription,
+      Region,
+      transactionType,
+      spec,
+      environmentTags,
+      environmentLabels,
+      usageWindowStart,
+      usageWindowEnd,
+      usagePricingUnit,
+      currency
+    )
+  )
+),
+monthly_rows AS (
+  SELECT *
+  FROM grouped_rows
+  WHERE consumptionModelIsAggregated = 0
+    AND usageWindowIsAggregated = 1
+),
+usage_window_stats AS (
+  SELECT
     serviceDescription,
-    spec,
+    projectID,
+    SKUID,
     SKUDescription,
     Region,
-    projectID;
+    transactionType,
+    spec,
+    environmentTags,
+    environmentLabels,
+    usagePricingUnit,
+    currency,
+    COUNT(*) AS usageWindowCount,
+    MIN(aggregatedUsage) AS usageWindowMin,
+    MAX(aggregatedUsage) AS usageWindowMax,
+    APPROX_QUANTILES(aggregatedUsage, 100)[OFFSET(50)] AS usageWindowMedian,
+    APPROX_QUANTILES(aggregatedUsage, 100)[OFFSET(95)] AS usageWindowP95
+  FROM grouped_rows
+  WHERE consumptionModelIsAggregated = 1
+    AND usageWindowIsAggregated = 0
+    AND DATE(usageWindowStart) BETWEEN '${START_DATE}' AND '${END_DATE}'
+    AND aggregatedUsage > 0
+  GROUP BY
+    serviceDescription,
+    projectID,
+    SKUID,
+    SKUDescription,
+    Region,
+    transactionType,
+    spec,
+    environmentTags,
+    environmentLabels,
+    usagePricingUnit,
+    currency
+)
+SELECT
+    monthly.serviceDescription,
+    monthly.projectID,
+    monthly.SKUID,
+    monthly.SKUDescription,
+    monthly.Region,
+    monthly.transactionType,
+    monthly.spec,
+    monthly.consumptionModelDescription,
+    monthly.environmentTags,
+    monthly.environmentLabels,
+    monthly.aggregatedUsage AS usageInPricingUnits,
+    monthly.usagePricingUnit,
+    stats.usageWindowMin,
+    stats.usageWindowMax,
+    stats.usageWindowMedian,
+    stats.usageWindowP95,
+    COALESCE(stats.usageWindowCount, 0) AS usageWindowCount,
+    monthly.aggregatedRowCount AS rowCount,
+    monthly.aggregatedCostAtList AS costAtList,
+    monthly.aggregatedCostAtListUSD AS costAtListUSD,
+    monthly.aggregatedCostAtListConsumptionModel AS costAtListConsumptionModel,
+    monthly.aggregatedFeeUtilizationOffset AS feeUtilizationOffset,
+    monthly.aggregatedCommittedUsageDiscountDollarBase AS committedUsageDiscountDollarBase,
+    monthly.aggregatedCommittedUsageDiscount AS committedUsageDiscount,
+    monthly.aggregatedFreeTier AS freeTier,
+    monthly.aggregatedSubscriptionBenefit AS subscriptionBenefit,
+    monthly.aggregatedSustainedUsageDiscount AS sustainedUsageDiscount,
+    monthly.currency
+FROM monthly_rows AS monthly
+LEFT JOIN usage_window_stats AS stats
+  ON monthly.serviceDescription IS NOT DISTINCT FROM stats.serviceDescription
+  AND monthly.projectID IS NOT DISTINCT FROM stats.projectID
+  AND monthly.SKUID IS NOT DISTINCT FROM stats.SKUID
+  AND monthly.SKUDescription IS NOT DISTINCT FROM stats.SKUDescription
+  AND monthly.Region IS NOT DISTINCT FROM stats.Region
+  AND monthly.transactionType IS NOT DISTINCT FROM stats.transactionType
+  AND monthly.spec IS NOT DISTINCT FROM stats.spec
+  AND monthly.environmentTags IS NOT DISTINCT FROM stats.environmentTags
+  AND monthly.environmentLabels IS NOT DISTINCT FROM stats.environmentLabels
+  AND monthly.usagePricingUnit IS NOT DISTINCT FROM stats.usagePricingUnit
+  AND monthly.currency IS NOT DISTINCT FROM stats.currency
+ORDER BY
+    monthly.serviceDescription,
+    monthly.spec,
+    monthly.SKUDescription,
+    monthly.Region,
+    monthly.projectID;
 
 EXPORT DATA
 OPTIONS (
@@ -1145,11 +1268,11 @@ SELECT
     monthly.environmentLabels,
     monthly.aggregatedUsage AS usageInPricingUnits,
     monthly.usagePricingUnit,
-    COALESCE(hourly.usageWindowCount, 0) AS usageWindowCount,
     hourly.usageWindowMin,
     hourly.usageWindowMax,
     hourly.usageWindowMedian,
     hourly.usageWindowP95,
+    COALESCE(hourly.usageWindowCount, 0) AS usageWindowCount,
     monthly.aggregatedRowCount AS rowCount,
     monthly.aggregatedDistinctResourceCount AS distinctResourceCount,
     monthly.aggregatedCostAtList AS costAtList,
