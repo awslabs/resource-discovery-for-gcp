@@ -1,6 +1,6 @@
 # Data Dictionary
 
-The following table describes each column extracted by the script (36 columns for detailed export, 27 for standard export). Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
+The following table describes each column extracted by the script (32 columns for detailed export, 27 for standard export). Definitions are based on the [GCP Billing Export Schema](https://cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage).
 
 | Column Name | Type | Description |
 |-------------|------|-------------|
@@ -19,10 +19,10 @@ The following table describes each column extracted by the script (36 columns fo
 | **environmentLabels** | String | Captured labels matching the configured label keys (semicolon-separated key:value pairs). |
 | **usageInPricingUnits** | Float | The quantity of usage in pricing units. |
 | **usagePricingUnit** | String | The unit in which resource usage is measured (e.g., "gibibyte month"). |
-| **usageMin** | Float | Minimum usage among the billing line items aggregated into this row. |
-| **usageMax** | Float | Maximum usage among the billing line items aggregated into this row. |
-| **usageMedian** | Float | Approximate median usage across the billing line items aggregated into this row. |
-| **usageP95** | Float | Approximate 95th percentile usage across the billing line items aggregated into this row. |
+| **usageMin** | Float | Standard export only. Minimum usage among the billing line items aggregated into this row. |
+| **usageMax** | Float | Standard export only. Maximum usage among the billing line items aggregated into this row. |
+| **usageMedian** | Float | Standard export only. Approximate median usage across the billing line items aggregated into this row. |
+| **usageP95** | Float | Standard export only. Approximate 95th percentile usage across the billing line items aggregated into this row. |
 | **usageWindowCount** | Integer | Detailed export only. Number of positive net usage windows used by the window statistics. |
 | **usageWindowMin** | Float | Detailed export only. Minimum positive net usage-window total. |
 | **usageWindowMax** | Float | Detailed export only. Maximum positive net usage-window total. |
