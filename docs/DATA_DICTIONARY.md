@@ -25,7 +25,7 @@ The following table describes the columns extracted by the script. Columns marke
 | **usageWindowP95** | Float | Approximate 95th percentile of positive net usage-window totals. |
 | **usageWindowCount** | Integer | Number of positive net usage windows used by the window statistics. |
 | **rowCount** | Integer | Number of raw billing line items aggregated into this row. |
-| **distinctResourceCount** | Integer | Detailed export only. Count of distinct original resource identifiers aggregated into this row. |
+| **distinctResourceCount** | Integer | Detailed export only. Count of distinct original resource identifiers across consumption models for the shared grouping dimensions. |
 | **costAtList** | Float | List price in the billing currency (publicly available pricing). |
 | **costAtListUSD** | Float | List price in USD (publicly available pricing). |
 | **costAtListConsumptionModel** | Float | List price per the applicable consumption model in the billing currency (publicly available pricing). |

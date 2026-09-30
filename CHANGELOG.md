@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Both exports replace line-item `usageMin`, `usageMax`, `usageMedian`, and `usageP95` with the usage-window statistics above.
+- Detailed `distinctResourceCount` is calculated across consumption models and repeated on sibling model rows.
 - BigQuery Reservation API job identifiers are collapsed in detailed exports, reducing output cardinality while preserving resource type and distinct resource counts.
 
 ## [9.10.1] - 2026-09-16

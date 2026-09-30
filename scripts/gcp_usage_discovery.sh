@@ -969,7 +969,7 @@ grouped_rows AS (
     )
   )
 ),
-monthly_rows AS (
+model_specific_rows AS (
   SELECT *
   FROM grouped_rows
   WHERE consumptionModelIsAggregated = 0
@@ -1040,7 +1040,7 @@ SELECT
     monthly.aggregatedSubscriptionBenefit AS subscriptionBenefit,
     monthly.aggregatedSustainedUsageDiscount AS sustainedUsageDiscount,
     monthly.currency
-FROM monthly_rows AS monthly
+FROM model_specific_rows AS monthly
 LEFT JOIN usage_window_stats AS stats
   ON monthly.serviceDescription IS NOT DISTINCT FROM stats.serviceDescription
   AND monthly.projectID IS NOT DISTINCT FROM stats.projectID
@@ -1201,16 +1201,53 @@ grouped_rows AS (
       usageWindowEnd,
       usagePricingUnit,
       currency
+    ),
+    (
+      serviceDescription,
+      resourceName,
+      resourceGlobalName,
+      resourceType,
+      projectID,
+      SKUID,
+      SKUDescription,
+      Region,
+      transactionType,
+      spec,
+      environmentTags,
+      environmentLabels,
+      usagePricingUnit,
+      currency
     )
   )
 ),
-monthly_rows AS (
+model_specific_rows AS (
   SELECT *
   FROM grouped_rows
   WHERE consumptionModelIsAggregated = 0
     AND usageWindowIsAggregated = 1
 ),
-hourly_stats AS (
+cross_model_resource_counts AS (
+  SELECT
+    serviceDescription,
+    resourceName,
+    resourceGlobalName,
+    resourceType,
+    projectID,
+    SKUID,
+    SKUDescription,
+    Region,
+    transactionType,
+    spec,
+    environmentTags,
+    environmentLabels,
+    usagePricingUnit,
+    currency,
+    aggregatedDistinctResourceCount AS distinctResourceCount
+  FROM grouped_rows
+  WHERE consumptionModelIsAggregated = 1
+    AND usageWindowIsAggregated = 1
+),
+usage_window_stats AS (
   SELECT
     serviceDescription,
     resourceName,
@@ -1268,13 +1305,13 @@ SELECT
     monthly.environmentLabels,
     monthly.aggregatedUsage AS usageInPricingUnits,
     monthly.usagePricingUnit,
-    hourly.usageWindowMin,
-    hourly.usageWindowMax,
-    hourly.usageWindowMedian,
-    hourly.usageWindowP95,
-    COALESCE(hourly.usageWindowCount, 0) AS usageWindowCount,
+    stats.usageWindowMin,
+    stats.usageWindowMax,
+    stats.usageWindowMedian,
+    stats.usageWindowP95,
+    COALESCE(stats.usageWindowCount, 0) AS usageWindowCount,
     monthly.aggregatedRowCount AS rowCount,
-    monthly.aggregatedDistinctResourceCount AS distinctResourceCount,
+    resource_counts.distinctResourceCount AS distinctResourceCount,
     monthly.aggregatedCostAtList AS costAtList,
     monthly.aggregatedCostAtListUSD AS costAtListUSD,
     monthly.aggregatedCostAtListConsumptionModel AS costAtListConsumptionModel,
@@ -1285,22 +1322,37 @@ SELECT
     monthly.aggregatedSubscriptionBenefit AS subscriptionBenefit,
     monthly.aggregatedSustainedUsageDiscount AS sustainedUsageDiscount,
     monthly.currency
-FROM monthly_rows AS monthly
-LEFT JOIN hourly_stats AS hourly
-  ON monthly.serviceDescription IS NOT DISTINCT FROM hourly.serviceDescription
-  AND monthly.resourceName IS NOT DISTINCT FROM hourly.resourceName
-  AND monthly.resourceGlobalName IS NOT DISTINCT FROM hourly.resourceGlobalName
-  AND monthly.resourceType IS NOT DISTINCT FROM hourly.resourceType
-  AND monthly.projectID IS NOT DISTINCT FROM hourly.projectID
-  AND monthly.SKUID IS NOT DISTINCT FROM hourly.SKUID
-  AND monthly.SKUDescription IS NOT DISTINCT FROM hourly.SKUDescription
-  AND monthly.Region IS NOT DISTINCT FROM hourly.Region
-  AND monthly.transactionType IS NOT DISTINCT FROM hourly.transactionType
-  AND monthly.spec IS NOT DISTINCT FROM hourly.spec
-  AND monthly.environmentTags IS NOT DISTINCT FROM hourly.environmentTags
-  AND monthly.environmentLabels IS NOT DISTINCT FROM hourly.environmentLabels
-  AND monthly.usagePricingUnit IS NOT DISTINCT FROM hourly.usagePricingUnit
-  AND monthly.currency IS NOT DISTINCT FROM hourly.currency
+FROM model_specific_rows AS monthly
+LEFT JOIN usage_window_stats AS stats
+  ON monthly.serviceDescription IS NOT DISTINCT FROM stats.serviceDescription
+  AND monthly.resourceName IS NOT DISTINCT FROM stats.resourceName
+  AND monthly.resourceGlobalName IS NOT DISTINCT FROM stats.resourceGlobalName
+  AND monthly.resourceType IS NOT DISTINCT FROM stats.resourceType
+  AND monthly.projectID IS NOT DISTINCT FROM stats.projectID
+  AND monthly.SKUID IS NOT DISTINCT FROM stats.SKUID
+  AND monthly.SKUDescription IS NOT DISTINCT FROM stats.SKUDescription
+  AND monthly.Region IS NOT DISTINCT FROM stats.Region
+  AND monthly.transactionType IS NOT DISTINCT FROM stats.transactionType
+  AND monthly.spec IS NOT DISTINCT FROM stats.spec
+  AND monthly.environmentTags IS NOT DISTINCT FROM stats.environmentTags
+  AND monthly.environmentLabels IS NOT DISTINCT FROM stats.environmentLabels
+  AND monthly.usagePricingUnit IS NOT DISTINCT FROM stats.usagePricingUnit
+  AND monthly.currency IS NOT DISTINCT FROM stats.currency
+LEFT JOIN cross_model_resource_counts AS resource_counts
+  ON monthly.serviceDescription IS NOT DISTINCT FROM resource_counts.serviceDescription
+  AND monthly.resourceName IS NOT DISTINCT FROM resource_counts.resourceName
+  AND monthly.resourceGlobalName IS NOT DISTINCT FROM resource_counts.resourceGlobalName
+  AND monthly.resourceType IS NOT DISTINCT FROM resource_counts.resourceType
+  AND monthly.projectID IS NOT DISTINCT FROM resource_counts.projectID
+  AND monthly.SKUID IS NOT DISTINCT FROM resource_counts.SKUID
+  AND monthly.SKUDescription IS NOT DISTINCT FROM resource_counts.SKUDescription
+  AND monthly.Region IS NOT DISTINCT FROM resource_counts.Region
+  AND monthly.transactionType IS NOT DISTINCT FROM resource_counts.transactionType
+  AND monthly.spec IS NOT DISTINCT FROM resource_counts.spec
+  AND monthly.environmentTags IS NOT DISTINCT FROM resource_counts.environmentTags
+  AND monthly.environmentLabels IS NOT DISTINCT FROM resource_counts.environmentLabels
+  AND monthly.usagePricingUnit IS NOT DISTINCT FROM resource_counts.usagePricingUnit
+  AND monthly.currency IS NOT DISTINCT FROM resource_counts.currency
 ORDER BY
     monthly.serviceDescription,
     monthly.resourceGlobalName,
