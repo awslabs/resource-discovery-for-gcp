@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.11.0] - 2026-10-01
+
+### Added
+- Both exports add `usageWindowCount`, `usageWindowMin`, `usageWindowMax`, `usageWindowMedian`, and `usageWindowP95`, calculated from positive net usage per start/end window across consumption models.
+
+### Changed
+- Both exports replace line-item `usageMin`, `usageMax`, `usageMedian`, and `usageP95` with the usage-window statistics above.
+- Detailed `distinctResourceCount` is calculated across consumption models and repeated on sibling model rows.
+- BigQuery Reservation API job identifiers are collapsed in detailed exports, reducing output cardinality while preserving resource type and distinct resource counts.
+
 ## [9.10.1] - 2026-09-16
 
 ### Fixed
