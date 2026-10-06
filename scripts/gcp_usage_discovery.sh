@@ -996,7 +996,6 @@ usage_window_stats AS (
   FROM grouped_rows
   WHERE consumptionModelIsAggregated = 1
     AND usageWindowIsAggregated = 0
-    AND DATE(usageWindowStart) BETWEEN '${START_DATE}' AND '${END_DATE}'
     AND aggregatedUsage > 0
   GROUP BY
     serviceDescription,
@@ -1074,16 +1073,16 @@ END;
 "
 else
   # Set resource and project fields based on anonymization
-  # Derived resource identifiers. Collapse selected high-cardinality rows by setting resourceName/resourceGlobalName to NULL.
+  # Derived resource identifiers. Label selected high-cardinality summary rows.
   # Define the condition once so both identifiers and anonymization behavior stay aligned.
   # resourceType and distinctResourceCount still derive from the original resource.global_name below.
   COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION="(service.description = 'BigQuery' AND sku.description LIKE 'Analysis%') OR (service.description = 'BigQuery Reservation API' AND REGEXP_EXTRACT(resource.global_name, r'/([^/]+)/[^/]+$') = 'jobs')"
-  RESOURCE_NAME_DERIVED="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN NULL ELSE COALESCE(REGEXP_EXTRACT(resource.name, r'/([^/]+)$'), resource.name) END"
-  RESOURCE_GLOBAL_NAME_DERIVED="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN NULL ELSE COALESCE(REGEXP_EXTRACT(resource.global_name, r'/([^/]+)$'), resource.global_name) END"
+  RESOURCE_NAME_DERIVED="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN 'summarized-rows' ELSE COALESCE(REGEXP_EXTRACT(resource.name, r'/([^/]+)$'), resource.name) END"
+  RESOURCE_GLOBAL_NAME_DERIVED="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN 'summarized-rows' ELSE resource.global_name END"
   if [ "$ANONYMIZE" = "true" ]; then
-    # Hash the derived identifiers (SHA512 + salt, 20-char output). NULL/'' preserved.
-    RESOURCE_NAME_FIELD="IF(${RESOURCE_NAME_DERIVED} IS NULL OR ${RESOURCE_NAME_DERIVED} = '', ${RESOURCE_NAME_DERIVED}, CONCAT('res_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)))"
-    RESOURCE_GLOBAL_NAME_FIELD="IF(${RESOURCE_GLOBAL_NAME_DERIVED} IS NULL OR ${RESOURCE_GLOBAL_NAME_DERIVED} = '', ${RESOURCE_GLOBAL_NAME_DERIVED}, CONCAT('global_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_GLOBAL_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)))"
+    # Hash normal derived identifiers (SHA512 + salt, 20-char output). NULL/'' and summary labels are preserved.
+    RESOURCE_NAME_FIELD="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN ${RESOURCE_NAME_DERIVED} WHEN ${RESOURCE_NAME_DERIVED} IS NULL OR ${RESOURCE_NAME_DERIVED} = '' THEN ${RESOURCE_NAME_DERIVED} ELSE CONCAT('res_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)) END"
+    RESOURCE_GLOBAL_NAME_FIELD="CASE WHEN ${COLLAPSE_RESOURCE_IDENTIFIERS_CONDITION} THEN ${RESOURCE_GLOBAL_NAME_DERIVED} WHEN ${RESOURCE_GLOBAL_NAME_DERIVED} IS NULL OR ${RESOURCE_GLOBAL_NAME_DERIVED} = '' THEN ${RESOURCE_GLOBAL_NAME_DERIVED} ELSE CONCAT('global_', SUBSTR(TO_HEX(SHA512(CONCAT(${RESOURCE_GLOBAL_NAME_DERIVED}, '${ANON_SALT}'))), 1, 20)) END"
     PROJECT_ID_FIELD="IF(project.id IS NULL OR project.id = '', project.id, CONCAT('proj_', SUBSTR(TO_HEX(SHA512(CONCAT(project.id, '${ANON_SALT}'))), 1, 20)))"
   else
     RESOURCE_NAME_FIELD="$RESOURCE_NAME_DERIVED"
@@ -1271,7 +1270,6 @@ usage_window_stats AS (
   FROM grouped_rows
   WHERE consumptionModelIsAggregated = 1
     AND usageWindowIsAggregated = 0
-    AND DATE(usageWindowStart) BETWEEN '${START_DATE}' AND '${END_DATE}'
     AND aggregatedUsage > 0
   GROUP BY
     serviceDescription,
