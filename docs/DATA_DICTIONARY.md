@@ -5,8 +5,8 @@ The following table describes the columns extracted by the script. Columns marke
 | Column Name | Type | Description |
 |-------------|------|-------------|
 | **serviceDescription** | String | The Google Cloud service that reported the data. |
-| **resourceName** | String | Detailed export only. The last path segment of the resource name (e.g., "instance-20251221-065118", "my-disk"). NULL for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis') and BigQuery Reservation API job rows (serviceDescription 'BigQuery Reservation API', resourceType 'jobs'). For simple names without paths, the value is preserved as-is. When `--anonymize` is used, this is hashed to a 24-character value (e.g., "res_a3f5c8d9e2b14f6a7890"). |
-| **resourceGlobalName** | String | Detailed export only. The last path segment of the resource identifier (e.g., "vm-1", "data1", "my-bucket"). NULL for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis') and BigQuery Reservation API job rows (serviceDescription 'BigQuery Reservation API', resourceType 'jobs'). When `--anonymize` is used, this is hashed to a 27-character value (e.g., "global_a3f5c8d9e2b14f6a7890"). |
+| **resourceName** | String | Detailed export only. The last path segment of the resource name (e.g., "instance-20251221-065118", "my-disk"). Uses `summarized-rows` for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis') and BigQuery Reservation API job rows (serviceDescription 'BigQuery Reservation API', resourceType 'jobs'). For simple names without paths, the value is preserved as-is. When `--anonymize` is used, `summarized-rows` remains unchanged and other non-empty values are hashed to a 24-character value (e.g., "res_a3f5c8d9e2b14f6a7890"). |
+| **resourceGlobalName** | String | Detailed export only. The full globally unique resource identifier. Uses `summarized-rows` for BigQuery Analysis rows (serviceDescription 'BigQuery', SKUDescription starting with 'Analysis') and BigQuery Reservation API job rows (serviceDescription 'BigQuery Reservation API', resourceType 'jobs'). When `--anonymize` is used, `summarized-rows` remains unchanged and other non-empty values are hashed to a 27-character value (e.g., "global_a3f5c8d9e2b14f6a7890"). |
 | **resourceType** | String | Detailed export only. The type of resource extracted from the global name path (e.g., "instances", "disks", "tables", "buckets"). Shows "Unassigned" if the type cannot be determined. This column is always visible, even when anonymized. |
 | **projectID** | String | The ID of the Google Cloud project that generated the data. When `--anonymize` is used, this is hashed to a 25-character value (e.g., "proj_a3f5c8d9e2b14f6a7890"). |
 | **SKUID** | String | The ID of the resource used by the service. |
@@ -25,7 +25,7 @@ The following table describes the columns extracted by the script. Columns marke
 | **usageWindowP95** | Float | Approximate 95th percentile of positive net usage-window totals. |
 | **usageWindowCount** | Integer | Number of positive net usage windows used by the window statistics. |
 | **rowCount** | Integer | Number of raw billing line items aggregated into this row. |
-| **distinctResourceCount** | Integer | Detailed export only. Count of distinct original resource identifiers across consumption models for the shared grouping dimensions. |
+| **distinctResourceCount** | Integer | Detailed export only. Count of distinct original global resource names across consumption models for the shared grouping dimensions. |
 | **costAtList** | Float | List price in the billing currency (publicly available pricing). |
 | **costAtListUSD** | Float | List price in USD (publicly available pricing). |
 | **costAtListConsumptionModel** | Float | List price per the applicable consumption model in the billing currency (publicly available pricing). |
@@ -41,7 +41,7 @@ The following table describes the columns extracted by the script. Columns marke
 
 **Note:** This extract includes only publicly available list prices and list credits. Negotiated pricing, adjustments, rounding errors, and taxes are not included.
 
-**Anonymization:** The `--anonymize` flag hashes `resourceName`, `resourceGlobalName`, and `projectID` using SHA512 with a local random salt. `resourceType` remains visible. Reusing the same salt produces consistent hashes across runs.
+**Anonymization:** The `--anonymize` flag hashes `resourceName`, `resourceGlobalName`, and `projectID` using SHA512 with a local random salt. The literal `summarized-rows` remains unchanged. `resourceType` remains visible. Reusing the same salt produces consistent hashes across runs.
 
 **Salt file security:** Keep `anonymize.salt` private. Anyone with the salt can test known identifiers against the anonymized values.
 

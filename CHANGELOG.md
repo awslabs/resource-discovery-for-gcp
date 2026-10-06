@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.11.1] - 2026-10-06
+
+### Fixed
+- Both exports include every selected billing row in usage-window statistics, including rows with out-of-period or NULL usage timestamps.
+- Detailed exports preserve the full `resourceGlobalName` for non-collapsed resources, preventing resources with the same final path segment from merging.
+- Intentional BigQuery Analysis and Reservation API job summaries emit `summarized-rows` as both `resourceName` and `resourceGlobalName`, including in anonymized output.
+
 ## [9.11.0] - 2026-10-01
 
 ### Added
