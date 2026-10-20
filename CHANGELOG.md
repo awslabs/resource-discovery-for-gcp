@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.12.0]
+
+### Changed
+- Improved query performance for large detailed and standard exports.
+- Seven monetary columns now use explicit USD-suffixed names and values calculated in USD at the billing-line level.
+- Credit columns now use deterministic decimal output, consistent with other monetary columns.
+- Improved query efficiency when tag or label keys are not requested.
+
 ## [9.11.1] - 2026-10-06
 
 ### Fixed
