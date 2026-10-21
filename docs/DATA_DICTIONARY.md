@@ -17,24 +17,24 @@ The following table describes the columns extracted by the script. Columns marke
 | **consumptionModelDescription** | String | The description of the consumption model. Note: "default" values are normalized to blank. |
 | **environmentTags** | String | Captured tags matching the configured tag keys (semicolon-separated key:value pairs). |
 | **environmentLabels** | String | Captured labels matching the configured label keys (semicolon-separated key:value pairs). |
-| **usageInPricingUnits** | Float | The quantity of usage in pricing units. |
+| **usageInPricingUnits** | Numeric | The quantity of usage in pricing units. |
 | **usagePricingUnit** | String | The unit in which resource usage is measured (e.g., "gibibyte month"). |
-| **usageWindowMin** | Float | Minimum positive net usage-window total. |
-| **usageWindowMax** | Float | Maximum positive net usage-window total. |
-| **usageWindowMedian** | Float | Approximate median of positive net usage-window totals. |
-| **usageWindowP95** | Float | Approximate 95th percentile of positive net usage-window totals. |
+| **usageWindowMin** | Numeric | Minimum positive net usage-window total. |
+| **usageWindowMax** | Numeric | Maximum positive net usage-window total. |
+| **usageWindowMedian** | Numeric | Approximate median of positive net usage-window totals. |
+| **usageWindowP95** | Numeric | Approximate 95th percentile of positive net usage-window totals. |
 | **usageWindowCount** | Integer | Number of positive net usage windows used by the window statistics. |
 | **rowCount** | Integer | Number of raw billing line items aggregated into this row. |
 | **distinctResourceCount** | Integer | Detailed export only. Count of distinct original global resource names across consumption models for the shared grouping dimensions. |
-| **costAtList** | Float | List price in the billing currency (publicly available pricing). |
-| **costAtListUSD** | Float | List price in USD (publicly available pricing). |
-| **costAtListConsumptionModel** | Float | List price per the applicable consumption model in the billing currency (publicly available pricing). |
-| **feeUtilizationOffset** | Float | Credit used to offset fees paid to purchase spend-based CUDs (in billing currency). |
-| **committedUsageDiscountDollarBase** | Float | Credit earned for legacy spend-based committed use discounts (in billing currency). |
-| **committedUsageDiscount** | Float | Credit for resource-based committed use contracts (Compute Engine) (in billing currency). |
-| **freeTier** | Float | Credit applied for free tier usage (in billing currency). |
-| **subscriptionBenefit** | Float | Credit earned by purchasing long-term subscriptions (in billing currency). |
-| **sustainedUsageDiscount** | Float | Automatic discount for running eligible Compute Engine resources for a significant portion of the billing month (in billing currency). |
+| **costAtList** | Numeric | List price in the billing currency (publicly available pricing). |
+| **costAtListUSD** | Numeric | List price in USD (publicly available pricing). |
+| **costAtListConsumptionModelUSD** | Numeric | List price per the applicable consumption model in USD (publicly available pricing). |
+| **feeUtilizationOffsetUSD** | Numeric | Credit used to offset fees paid to purchase spend-based CUDs (in USD). |
+| **committedUsageDiscountDollarBaseUSD** | Numeric | Credit earned for legacy spend-based committed use discounts (in USD). |
+| **committedUsageDiscountUSD** | Numeric | Credit for resource-based committed use contracts (Compute Engine) (in USD). |
+| **freeTierUSD** | Numeric | Credit applied for free tier usage (in USD). |
+| **subscriptionBenefitUSD** | Numeric | Credit earned by purchasing long-term subscriptions (in USD). |
+| **sustainedUsageDiscountUSD** | Numeric | Automatic discount for running eligible Compute Engine resources for a significant portion of the billing month (in USD). |
 | **currency** | String | The currency that the cost is billed in. |
 
 **Usage-window statistics:** Usage is netted across consumption models for each start/end window. Detailed exports calculate statistics per resource when identifiers exist; standard exports calculate them per project/SKU.
