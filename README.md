@@ -112,7 +112,7 @@ This displays the query, validates it with BigQuery, without actually extracting
 
 ![run script 1](images/run_script_1.png)
 
-The script validates your inputs, checks permissions, validates the query, shows the amount of data to be processed, and begins the BigQuery export. You'll be prompted to confirm at three points: after reviewing parameters, if data availability warnings occur, and before query execution (unless `-y` flag is used). The full execution typically takes a few minutes depending on data volume.
+The script validates your inputs, checks permissions, validates the query, shows the amount of data to be processed, and begins the BigQuery export. You'll be prompted to confirm twice: after reviewing parameters and before query execution (unless `-y` flag is used). If the billing table does not contain data for the whole requested period, the script stops before the export and suggests how to re-run. The full execution typically takes a few minutes depending on data volume.
 
 ![run script 2](images/run_script_2.png)
 
