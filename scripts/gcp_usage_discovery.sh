@@ -131,6 +131,29 @@ format_array() {
   echo "['$(echo "$1" | sed 's/[[:space:]]*,[[:space:]]*/,/g' | sed "s/,/', '/g")']"
 }
 
+# redact_log: Copies stdin to stdout with sensitive configuration values masked
+# Usage: Used as the log file writer when --anonymize is enabled
+redact_log() {
+  local line value salt=""
+  local project="${BILLING_TABLE%%.*}" table="${BILLING_TABLE##*.}" dataset="${BILLING_TABLE#*.}"
+  dataset="${dataset%%.*}"
+  local values="${project}:${dataset}.${table} ${BILLING_TABLE} ${project}:${dataset} ${project}.${dataset} ${table} ${GCS_BUCKET} ${GCS_BUCKET%%/*} ${project} ${PROJECT_FILTER//,/ }"
+  # Mask longer values first so a value that contains another is masked whole
+  values=$(printf '%s\n' $values | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -z "$salt" ] && [ -s anonymize.salt ]; then
+      read -r salt < anonymize.salt || true
+    fi
+    if [ -n "$salt" ]; then
+      line="${line//"$salt"/[REDACTED]}"
+    fi
+    for value in $values; do
+      line="${line//"$value"/[REDACTED]}"
+    done
+    printf '%s\n' "$line" || true
+  done
+}
+
 # add_days_to_date: Adds days to a date (handles macOS/Linux differences)
 # Usage: add_days_to_date "2025-01-01" 5 returns "2025-01-06"
 add_days_to_date() {
@@ -144,6 +167,20 @@ add_days_to_date() {
   else
     date -d "$input_date + $days days" +%Y-%m-%d
   fi
+}
+
+# days_inclusive: Counts the days from one date to another, both included (handles macOS/Linux differences)
+# Usage: days_inclusive "2025-01-01" "2025-01-14" returns 14
+days_inclusive() {
+  local start end
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    start=$(date -j -u -f "%Y-%m-%d %H:%M:%S" "$1 00:00:00" +%s)
+    end=$(date -j -u -f "%Y-%m-%d %H:%M:%S" "$2 00:00:00" +%s)
+  else
+    start=$(date -u -d "$1" +%s)
+    end=$(date -u -d "$2" +%s)
+  fi
+  echo $(( (end - start) / 86400 + 1 ))
 }
 
 
@@ -287,6 +324,7 @@ if [ -n "$CONFIG_FILE" ]; then
     CLI_SKIP_CONFIRM="$SKIP_CONFIRM"
     CLI_DRY_RUN="$DRY_RUN"
     CLI_ANONYMIZE="$ANONYMIZE"
+    CLI_USE_STANDARD_EXPORT="$USE_STANDARD_EXPORT"
     
     # Parse config file (strict key=value only, no shell execution)
     while IFS= read -r line || [ -n "$line" ]; do
@@ -331,6 +369,7 @@ if [ -n "$CONFIG_FILE" ]; then
     [ "$CLI_SKIP_CONFIRM" = "true" ] && SKIP_CONFIRM="true"
     [ "$CLI_DRY_RUN" = "true" ] && DRY_RUN="true"
     [ "$CLI_ANONYMIZE" = "true" ] && ANONYMIZE="true"
+    [ "$CLI_USE_STANDARD_EXPORT" = "true" ] && USE_STANDARD_EXPORT="true"
   else
     echo "Error: Config file not found: $CONFIG_FILE"
     exit 1
@@ -403,10 +442,12 @@ fi
 
 # Date range: positive integer
 if [ -n "$DATE_RANGE" ]; then
-  if ! [[ "$DATE_RANGE" =~ ^[0-9]+$ ]] || [ "$DATE_RANGE" -lt 1 ]; then
+  if ! [[ "$DATE_RANGE" =~ ^[0-9]{1,9}$ ]] || [ "$DATE_RANGE" -lt 1 ]; then
     echo "Error: -r must be a positive integer, got: $DATE_RANGE"
     usage
   fi
+  # Read as base 10 so leading zeros are not treated as octal
+  DATE_RANGE=$((10#$DATE_RANGE))
 fi
 
 # Project filter: valid characters only (if provided)
@@ -429,6 +470,16 @@ if [ -n "$CAPTURE_LABELS" ] && [[ ! "$CAPTURE_LABELS" =~ ^[a-zA-Z0-9_,./-]+$ ]];
   echo "Allowed: letters, numbers, underscores, commas, dots, hyphens, forward slashes"
   usage
 fi
+
+# On/off settings: true or false in any letter case; any other value is rejected
+for SETTING_NAME in SKIP_CONFIRM DRY_RUN ANONYMIZE USE_STANDARD_EXPORT; do
+  SETTING_VALUE=$(printf '%s' "${!SETTING_NAME}" | tr '[:upper:]' '[:lower:]')
+  if [ "$SETTING_VALUE" != "true" ] && [ "$SETTING_VALUE" != "false" ]; then
+    echo "Error: ${SETTING_NAME} must be true or false, got: ${!SETTING_NAME}"
+    usage
+  fi
+  printf -v "$SETTING_NAME" '%s' "$SETTING_VALUE"
+done
 
 # --- Parameter Relationship Validation ---
 # Mutual exclusivity of -m and -r
@@ -479,7 +530,11 @@ mkdir -p logs
 LOG_FILE_LOCAL="logs/gcp_usage_${CUSTOMER_NAME}_${CURRENT_TS}_${QUERY_FORMAT}_${MODE_INDICATOR}.log"
 RESULTS_FOLDER_NAME="gcp_usage_${CUSTOMER_NAME}_${CURRENT_TS}_${QUERY_FORMAT}_${CAPTURE_PERIOD}"
 RESULTS_ZIP_NAME="${RESULTS_FOLDER_NAME}.zip"
-exec > >(tee -i "$LOG_FILE_LOCAL") 2>&1
+if [ "$ANONYMIZE" = "true" ]; then
+  exec > >(tee -i >(redact_log > "$LOG_FILE_LOCAL")) 2>&1
+else
+  exec > >(tee -i "$LOG_FILE_LOCAL") 2>&1
+fi
 
 # =============================================================================
 # REQUIRED TOOLS CHECK
@@ -555,7 +610,12 @@ if [ "$USE_STANDARD_EXPORT" = "true" ]; then
   log_message "⚠️  Using standard export mode (advanced configuration)"
 else
   log_message "Verifying detailed billing export..."
-  if ! bq show --schema "$BQ_TABLE_FORMAT" | grep -q '"name":"resource"'; then
+  if ! TABLE_SCHEMA=$(bq show --schema "$BQ_TABLE_FORMAT"); then
+    echo "Error: Could not read the schema of billing table '${DISPLAY_BILLING_TABLE}'."
+    echo "Review the error above and try again."
+    validation_error
+  fi
+  if [[ "$TABLE_SCHEMA" != *'"name":"resource"'* ]]; then
     echo "❌ ERROR: The billing table does not appear to be a detailed export."
     echo ""
     echo "This script requires detailed billing export with resource-level data."
@@ -690,11 +750,15 @@ fi
 if [ "$USE_DATE_RANGE" = "true" ]; then
   # Date range mode - filter by exact partition dates
   WHERE_FILTER="DATE(_PARTITIONTIME) BETWEEN '${START_DATE}' AND '${END_DATE}' AND cost_type = 'regular'"
+  # invoiceMonth: first and last partition dates, both included (YYYYMMDD-YYYYMMDD)
+  INVOICE_MONTH_VALUE="'${START_DATE//-/}-${END_DATE//-/}'"
 else
   # Month mode - filter by invoice month with partition buffer for late-arriving data
   PARTITION_BUFFER_START=$(add_days_to_date "$START_DATE" -1)
   PARTITION_BUFFER_END=$(add_days_to_date "$END_DATE" "$PARTITION_BUFFER_DAYS")
   WHERE_FILTER="DATE(_PARTITIONTIME) BETWEEN '${PARTITION_BUFFER_START}' AND '${PARTITION_BUFFER_END}' AND invoice.month = '${CAPTURE_MONTH}' AND cost_type = 'regular'"
+  # invoiceMonth: invoice month from the billing data (YYYYMM)
+  INVOICE_MONTH_VALUE="invoice.month"
 fi
 
 # Add project filter if specified
@@ -855,23 +919,26 @@ if [ "$DATA_SUFFICIENT" = "true" ]; then
   echo "============================================="
   log_message "✓ Data availability check passed"
 else
-  echo "  Status:                 ⚠️  WARNING: Available data is less than requested"
+  echo "  Status:                 ❌ Available data is less than requested"
   echo "============================================="
-  log_message "⚠️  Data availability check: partial data warning"
   echo ""
-  echo "⚠️  DATA AVAILABILITY WARNING"
-  echo "The billing table does not contain complete data for the requested period."
-  echo ""
-  
-  # Force confirmation only if -y flag not used
-  if [ "$SKIP_CONFIRM" != "true" ]; then
-    read -rp "Available data is incomplete. Do you want to proceed with partial data? (y/n): " PARTIAL_CONFIRM
-    if [[ ! "$PARTIAL_CONFIRM" =~ ^[Yy]$ ]]; then
-      echo "Operation cancelled."
-      exit 0
+  echo "❌ ERROR: The billing table does not contain data for the whole requested period."
+  YESTERDAY=$(add_days_to_date "$(date +%Y-%m-%d)" -1)
+  SUGGESTED_RANGE=$(days_inclusive "$AVAILABLE_MIN_PARTITION_DATE" "$YESTERDAY")
+  [ "$SUGGESTED_RANGE" -gt 31 ] && SUGGESTED_RANGE=31
+  if [[ "$AVAILABLE_MAX_PARTITION_DATE" < "$END_DATE" ]] || [ "$SUGGESTED_RANGE" -lt 1 ]; then
+    echo "Re-run after the billing table has data through ${END_DATE}."
+  else
+    # -r always ends yesterday, so suggest the range that covers the available days (31 at most)
+    SUGGESTED_START=$(add_days_to_date "$YESTERDAY" $((1 - SUGGESTED_RANGE)))
+    if [ "$USE_DATE_RANGE" = "true" ]; then
+      echo "To export the available days, re-run with -r ${SUGGESTED_RANGE} (${SUGGESTED_START} to ${YESTERDAY})."
+    else
+      echo "To export the available days, re-run with -r ${SUGGESTED_RANGE} (${SUGGESTED_START} to ${YESTERDAY}) instead of -m,"
+      echo "or re-run with -m for a later month once all of its data has been collected."
     fi
-    echo ""
   fi
+  validation_error
 fi
 
 # Build query based on export type (detailed vs standard)
@@ -890,6 +957,7 @@ CREATE OR REPLACE TEMP TABLE gcp_usage_discovery_month AS
 WITH base_rows AS (
   -- Derive one normalized row per source billing line.
   SELECT
+    ${INVOICE_MONTH_VALUE} AS invoiceMonth,
     service.description AS serviceDescription,
     project.id AS projectID,
     sku.id AS SKUID,
@@ -923,6 +991,7 @@ WITH base_rows AS (
 pre AS (
   -- Aggregate rows at the finest grain shared by every output.
   SELECT
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -950,6 +1019,7 @@ pre AS (
     SUM(sustainedUsageDiscountUSDValue) AS sSustainedUsageDiscountUSD
   FROM base_rows
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -968,6 +1038,7 @@ pre AS (
 monthly AS (
   -- Aggregate measures to one row per output key and consumption model.
   SELECT
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -993,6 +1064,7 @@ monthly AS (
     SUM(sSustainedUsageDiscountUSD) AS sustainedUsageDiscountUSD
   FROM pre
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1009,6 +1081,7 @@ monthly AS (
 windows AS (
   -- Net usage to one row per output key and usage window.
   SELECT
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1025,6 +1098,7 @@ windows AS (
     SUM(sUsageInPricingUnits) AS windowUsage
   FROM pre
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1042,6 +1116,7 @@ windows AS (
 stats AS (
   -- Summarize positive windows to one row per output key.
   SELECT
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1061,6 +1136,7 @@ stats AS (
   FROM windows
   WHERE windowUsage > 0
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1075,7 +1151,7 @@ stats AS (
 ),
 merged AS (
   -- Stack one row per aggregate kind and its natural output key.
-  SELECT serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency,
+  SELECT invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency,
     consumptionModelDescription,
     usageInPricingUnits,
     rowCount,
@@ -1096,7 +1172,7 @@ merged AS (
     0 AS rowKind
   FROM monthly
   UNION ALL
-  SELECT serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency,
+  SELECT invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency,
     CAST(NULL AS STRING) AS consumptionModelDescription,
     CAST(NULL AS NUMERIC) AS usageInPricingUnits,
     CAST(NULL AS INT64) AS rowCount,
@@ -1118,6 +1194,7 @@ merged AS (
   FROM stats
 )
 SELECT
+    invoiceMonth,
     serviceDescription,
     ${PROJECT_ID_FIELD},
     SKUID,
@@ -1148,6 +1225,7 @@ SELECT
     currency
 FROM (
   SELECT
+    invoiceMonth,
     serviceDescription,
     projectID,
     SKUID,
@@ -1171,11 +1249,11 @@ FROM (
     freeTierUSD,
     subscriptionBenefitUSD,
     sustainedUsageDiscountUSD,
-    MAX(usageWindowCount) OVER (PARTITION BY serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowCount,
-    MAX(usageWindowMin) OVER (PARTITION BY serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMin,
-    MAX(usageWindowMax) OVER (PARTITION BY serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMax,
-    MAX(usageWindowMedian) OVER (PARTITION BY serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMedian,
-    MAX(usageWindowP95) OVER (PARTITION BY serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowP95,
+    MAX(usageWindowCount) OVER (PARTITION BY invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowCount,
+    MAX(usageWindowMin) OVER (PARTITION BY invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMin,
+    MAX(usageWindowMax) OVER (PARTITION BY invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMax,
+    MAX(usageWindowMedian) OVER (PARTITION BY invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowMedian,
+    MAX(usageWindowP95) OVER (PARTITION BY invoiceMonth, serviceDescription, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency) AS usageWindowP95,
     rowKind
   FROM merged
 )
@@ -1229,6 +1307,7 @@ CREATE OR REPLACE TEMP TABLE gcp_usage_discovery_month AS
 WITH base_rows AS (
   -- Derive one normalized row per source billing line.
   SELECT
+    ${INVOICE_MONTH_VALUE} AS invoiceMonth,
     service.description AS serviceDescription,
     ${RESOURCE_NAME_DERIVED} AS resourceName,
     ${RESOURCE_GLOBAL_NAME_DERIVED} AS resourceGlobalName,
@@ -1266,6 +1345,7 @@ WITH base_rows AS (
 pre AS (
   -- Aggregate rows at the finest grain shared by every output.
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1297,6 +1377,7 @@ pre AS (
     SUM(sustainedUsageDiscountUSDValue) AS sSustainedUsageDiscountUSD
   FROM base_rows
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1319,6 +1400,7 @@ pre AS (
 monthly AS (
   -- Aggregate measures to one row per output key and consumption model.
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1347,6 +1429,7 @@ monthly AS (
     SUM(sSustainedUsageDiscountUSD) AS sustainedUsageDiscountUSD
   FROM pre
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1366,6 +1449,7 @@ monthly AS (
 windows AS (
   -- Net usage to one row per output key and usage window.
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1385,6 +1469,7 @@ windows AS (
     SUM(sUsageInPricingUnits) AS windowUsage
   FROM pre
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1405,6 +1490,7 @@ windows AS (
 stats AS (
   -- Summarize positive windows to one row per output key.
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1427,6 +1513,7 @@ stats AS (
   FROM windows
   WHERE windowUsage > 0
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1445,6 +1532,7 @@ stats AS (
 resource_counts AS (
   -- Count original resources to one row per detailed output key.
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1462,6 +1550,7 @@ resource_counts AS (
     ${IS_SUMMARIZED_PREFIX}COUNT(DISTINCT originalResourceGlobalName) AS distinctResourceCount
   FROM pre
   GROUP BY
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1479,7 +1568,7 @@ resource_counts AS (
 ),
 merged AS (
   -- Stack one row per aggregate kind and its natural output key.
-  SELECT serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
+  SELECT invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
     consumptionModelDescription,
     usageInPricingUnits,
     rowCount,
@@ -1501,7 +1590,7 @@ merged AS (
     0 AS rowKind
   FROM monthly
   UNION ALL
-  SELECT serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
+  SELECT invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
     CAST(NULL AS STRING) AS consumptionModelDescription,
     CAST(NULL AS NUMERIC) AS usageInPricingUnits,
     CAST(NULL AS INT64) AS rowCount,
@@ -1523,7 +1612,7 @@ merged AS (
     1 AS rowKind
   FROM stats
   UNION ALL
-  SELECT serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
+  SELECT invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX},
     CAST(NULL AS STRING) AS consumptionModelDescription,
     CAST(NULL AS NUMERIC) AS usageInPricingUnits,
     CAST(NULL AS INT64) AS rowCount,
@@ -1546,6 +1635,7 @@ merged AS (
   FROM resource_counts
 )
 SELECT
+    invoiceMonth,
     serviceDescription,
     ${RESOURCE_NAME_FIELD},
     ${RESOURCE_GLOBAL_NAME_FIELD},
@@ -1580,6 +1670,7 @@ SELECT
     currency
 FROM (
   SELECT
+    invoiceMonth,
     serviceDescription,
     resourceName,
     resourceGlobalName,
@@ -1606,12 +1697,12 @@ FROM (
     freeTierUSD,
     subscriptionBenefitUSD,
     sustainedUsageDiscountUSD,
-    MAX(usageWindowCount) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowCount,
-    MAX(usageWindowMin) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMin,
-    MAX(usageWindowMax) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMax,
-    MAX(usageWindowMedian) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMedian,
-    MAX(usageWindowP95) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowP95,
-    MAX(distinctResourceCount) OVER (PARTITION BY serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS distinctResourceCount,
+    MAX(usageWindowCount) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowCount,
+    MAX(usageWindowMin) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMin,
+    MAX(usageWindowMax) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMax,
+    MAX(usageWindowMedian) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowMedian,
+    MAX(usageWindowP95) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS usageWindowP95,
+    MAX(distinctResourceCount) OVER (PARTITION BY invoiceMonth, serviceDescription, resourceName, resourceGlobalName, resourceType, projectID, SKUID, SKUDescription, Region, transactionType, spec, environmentTags, environmentLabels, usagePricingUnit, currency${IS_SUMMARIZED_INLINE_SUFFIX}) AS distinctResourceCount,
     rowKind
   FROM merged
 )
