@@ -51,6 +51,8 @@ The script pulls one month of usage data from your GCP detailed billing export i
 
 Enable the **"Detailed usage cost data"** export.
 
+**Tip:** If you enable the detailed export for the first time and choose a BigQuery dataset in the US or EU multi-region, Cloud Billing also exports data from the start of the previous month. This data loads oldest first and can take up to five days, so wait until it finishes before running the script. With a dataset in a single region, data starts on the day you enable the export.
+
 **2. Cloud Storage Bucket Access**
 
 - Access to a Cloud Storage bucket for output files
